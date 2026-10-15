@@ -30,3 +30,8 @@ A serverless cloud file storage application developed for the Cloud Computing 1 
 - Cloudflare R2 bucket configured
 - Worker-to-R2 binding added
 - Local R2 test endpoint working
+- Application deployed to Cloudflare Workers
+- R2 connection verified in the deployed environment
+- File upload implemented
+- File upload tested locally
+- File upload verified with deployed Cloudflare Worker and R2
