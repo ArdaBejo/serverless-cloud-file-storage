@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
+import PreviewDialog from './PreviewDialog';
 
 type StoredFile = { key: string; name: string; size: number; type: string; uploadedAt: string; etag: string };
 type FilePage = { files: StoredFile[]; cursor: string | null };
@@ -26,6 +27,7 @@ const iconPaths = {
   file: 'M14 3H5v18h14V8l-5-5ZM14 3v5h5M8 13h8M8 17h5',
   refresh: 'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 3M4 16l2 3a7 7 0 0 0 12-2',
   download: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',
+  eye: 'M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12ZM15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z',
   trash: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7',
   link: 'm10 13 4-4M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0M16 8l2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0',
 };
@@ -36,6 +38,7 @@ function Icon({ name }: { name: keyof typeof iconPaths }) {
 
 function App() {
   const [query, setQuery] = useState('');
+  const [previewFile, setPreviewFile] = useState<StoredFile | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -118,6 +121,17 @@ function App() {
     });
   }
 
+  async function downloadFile(item: StoredFile) {
+    await run(async () => {
+      const response = await request(`/api/file?key=${encodeURIComponent(item.key)}`);
+      if (!response.ok) await readResponse(response);
+      const url = URL.createObjectURL(await response.blob());
+      const anchor = document.createElement('a');
+      anchor.href = url; anchor.download = item.name; document.body.append(anchor); anchor.click(); anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    });
+  }
+
   async function deleteFile(item: StoredFile) {
     if (!window.confirm(`Delete "${item.name}" permanently?`)) return;
     await run(async () => {
@@ -141,7 +155,6 @@ function App() {
           <input aria-label="Search loaded files" placeholder="Search files" value={query} onChange={event => setQuery(event.target.value)} />
           {query && <button className="clear-search" aria-label="Clear search" onClick={() => setQuery('')}>×</button>}
         </div>
-        <span className="project-label">Cloud Computing 1</span>
       </header>
 
       <aside className="sidebar" aria-label="File navigation">
@@ -160,13 +173,13 @@ function App() {
           <button className="secondary-button refresh-button" disabled={busy || loading || locked} onClick={() => void run(refresh)}><Icon name="refresh" /> Refresh</button>
         </div>
 
-        {config && !config.protected && <p className="demo-notice">Shared course demo · Use test files only. Anyone with access can manage them.</p>}
+        {config && !config.protected && <p className="demo-notice">Public access · Anyone with this link can manage files. Use test files until private access is enabled.</p>}
 
         {config?.protected && <form className="unlock-form" onSubmit={event => {
           event.preventDefault();
           const value = keyInput.current?.value.trim() || '';
           if (!value) return;
-          setFiles([]); setStats(null); setShare(null); setCursor(null); setError('');
+          setFiles([]); setStats(null); setShare(null); setPreviewFile(null); setCursor(null); setError('');
           setLoading(true); setToken(value); setUnlockAttempt(previous => previous + 1);
         }}>
           <label htmlFor="management-key">Management key</label>
@@ -212,17 +225,11 @@ function App() {
               <thead><tr><th scope="col">Name</th><th scope="col">Uploaded</th><th scope="col">File size</th><th scope="col" className="actions-heading">Actions</th></tr></thead>
               <tbody>{visibleFiles.map(item => <tr key={item.key}>
                 <td><div className="file-name-cell"><span className={`file-symbol ${item.type.startsWith('image/') ? 'image-file' : item.type === 'application/pdf' ? 'pdf-file' : ''}`}><Icon name="file" /></span>
-                  <div className="file-name"><strong>{item.name}</strong><small>{item.type}</small></div></div></td>
+                  <div className="file-name"><button className="file-preview-name" disabled={busy} aria-label={`Preview ${item.name}`} onClick={() => setPreviewFile(item)}>{item.name}</button><small>{item.type}</small></div></div></td>
                 <td className="date-cell"><time dateTime={item.uploadedAt} title={new Date(item.uploadedAt).toLocaleString()}>{new Date(item.uploadedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</time></td>
                 <td className="size-cell">{formatBytes(item.size)}</td>
-                <td><div className="file-actions"><button className="icon-button" title="Download" aria-label={`Download ${item.name}`} disabled={busy} onClick={() => void run(async () => {
-                  const response = await request(`/api/file?key=${encodeURIComponent(item.key)}`);
-                  if (!response.ok) await readResponse(response);
-                  const url = URL.createObjectURL(await response.blob());
-                  const anchor = document.createElement('a');
-                  anchor.href = url; anchor.download = item.name; document.body.append(anchor); anchor.click(); anchor.remove();
-                  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-                })}><Icon name="download" /></button>
+                <td><div className="file-actions"><button className="icon-button" title="Preview" aria-label={`Open preview of ${item.name}`} disabled={busy} onClick={() => setPreviewFile(item)}><Icon name="eye" /></button>
+                  <button className="icon-button" title="Download" aria-label={`Download ${item.name}`} disabled={busy} onClick={() => void downloadFile(item)}><Icon name="download" /></button>
                   {config?.sharingEnabled && <button className="icon-button" title="Share" aria-label={`Share ${item.name}`} disabled={busy} onClick={() => void run(async () => {
                     const link = await request('/api/share', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ key: item.key, expiresIn }),
@@ -240,6 +247,7 @@ function App() {
           })}>Load more files</button></div>}
         </section>
       </main>
+      {previewFile && <PreviewDialog key={previewFile.key} file={previewFile} request={request} busy={busy} onClose={() => setPreviewFile(null)} onDownload={() => void downloadFile(previewFile)} />}
     </div>
   );
 }

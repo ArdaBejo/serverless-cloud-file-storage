@@ -1,6 +1,6 @@
 # Serverless Cloud File Storage
 
-Cloud Computing 1 term project using React, TypeScript, Cloudflare Workers, R2 and Wrangler.
+A personal serverless file storage app built with React, TypeScript, Cloudflare Workers, R2 and Wrangler.
 
 ## Development
 
@@ -19,6 +19,7 @@ Development uses local R2, not the deployed bucket. `npm test` builds the app an
 - Upload files up to 25 MiB with unique keys to preserve duplicate filenames
 - Paginated listing with original name, MIME type, size and upload time
 - Simple Drive-inspired layout with a sidebar, storage summary and filename search across loaded files
+- In-app previews for raster images, PDFs and text files
 - Attachment downloads and deletion with confirmation
 - Bucket-wide file count and total stored bytes
 - Optional management key protection and temporary signed download links
@@ -60,7 +61,7 @@ When `ADMIN_TOKEN` is set, upload, listing, statistics, direct download, deletio
 
 `POST /api/share` accepts `{ "key": "object-key", "expiresIn": 900 }`. Lifetimes range from 60 seconds to 24 hours. The UI offers 15 minutes, 1 hour and 24 hours. The returned URL grants download access only to that object's exact version. HMAC-SHA256 prevents modification. Expiry, deletion or replacement invalidates the link; rotating `SHARE_SECRET` invalidates all links. Anyone holding the link can forward it, and downloaded copies remain available after expiry.
 
-This is a single-owner course project. Per-user accounts, rate limiting and resumable large-file uploads are not implemented.
+This is a single-owner personal project. Per-user accounts, rate limiting and resumable large-file uploads are not implemented.
 
 ## Validation
 
@@ -81,3 +82,11 @@ Temporary sharing and protected management are implemented and tested locally. S
 R2 reference: https://developers.cloudflare.com/r2/api/workers/workers-api-reference/
 
 
+
+## File previews
+
+Click a filename or the eye icon to open a preview. Images (PNG, JPEG, GIF, WebP, AVIF and BMP), PDFs and text/code files are supported. PDFs use the browser's PDF viewer; a Download button remains available if the viewer is disabled or the format is unsupported. Office documents and archives are download-only.
+
+Preview reads bytes from the existing authenticated file endpoint into browser memory; it does not save a file to disk or send data to a third-party viewer. Text is limited to 1 MiB, image/PDF previews to 25 MiB. The streamed response is bounded even if metadata is wrong. HTML and SVG are shown as escaped plain text, not executed. PDF headers are checked before display. Closing the preview aborts pending requests and releases its temporary object URL. The native dialog supports keyboard focus and Escape to close.
+
+Preview tests cover supported types, markup handling, PDF headers, declared size limits and streaming cancellation. Tests require Node.js 24 (the development runtime) or another release with built-in TypeScript stripping support. Interactive browser/PDF-viewer verification remains manual.
