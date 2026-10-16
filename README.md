@@ -18,6 +18,7 @@ Development uses local R2, not the deployed bucket. `npm test` builds the app an
 
 - Upload files up to 25 MiB with unique keys to preserve duplicate filenames
 - Paginated listing with original name, MIME type, size and upload time
+- Simple Drive-inspired layout with a sidebar, storage summary and filename search across loaded files
 - Attachment downloads and deletion with confirmation
 - Bucket-wide file count and total stored bytes
 - Optional management key protection and temporary signed download links
@@ -75,6 +76,8 @@ For protected deployments, supply `ADMIN_TOKEN` through the process environment.
 
 On 16 October 2026, file-management commit `ece843c` was deployed as Worker version `870623e6-d1cc-48f7-afd2-250cecc3e744`. The full live R2 round-trip check passed, including deletion and the subsequent 404 response. An earlier 94-byte upload-only probe named `codex-r2-verification-2026-10-16T13-04-08-465Z.txt` remains in the bucket.
 
-Temporary sharing and protected management are implemented and tested locally. They have not been deployed or enabled with live secrets yet. Browser visual verification was unavailable in this environment.
+Temporary sharing and protected management are implemented and tested locally. Sharing remains disabled until live secrets are configured. Browser visual verification was unavailable in this environment.
 
 R2 reference: https://developers.cloudflare.com/r2/api/workers/workers-api-reference/
+
+

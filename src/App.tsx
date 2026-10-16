@@ -18,7 +18,24 @@ async function readResponse<T>(response: Response): Promise<T> {
   return data as T;
 }
 
+const iconPaths = {
+  cloud: 'M7 18a5 5 0 0 1-1-9.9 6 6 0 0 1 11.6 1.5A4.2 4.2 0 0 1 18 18H7Z',
+  search: 'm21 21-5-5M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Z',
+  folder: 'M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3V7Z',
+  plus: 'M12 5v14M5 12h14',
+  file: 'M14 3H5v18h14V8l-5-5ZM14 3v5h5M8 13h8M8 17h5',
+  refresh: 'M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-2l2 3M4 16l2 3a7 7 0 0 0 12-2',
+  download: 'M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5',
+  trash: 'M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7',
+  link: 'm10 13 4-4M8 16l-2 2a4 4 0 0 1-6-6l5-5a4 4 0 0 1 6 0M16 8l2-2a4 4 0 0 1 6 6l-5 5a4 4 0 0 1-6 0',
+};
+
+function Icon({ name }: { name: keyof typeof iconPaths }) {
+  return <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={iconPaths[name]} /></svg>;
+}
+
 function App() {
+  const [query, setQuery] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -112,80 +129,118 @@ function App() {
     });
   }
 
+  const visibleFiles = files.filter(item => item.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const locked = !!config?.protected && !token;
+
   return (
-    <main>
-      <h1>Cloud File Storage</h1>
-      <p>Upload and manage files stored in Cloudflare R2.</p>
-      {config && !config.protected && <p className="notice">Shared course demo: anyone with access to this app can manage its files. Use test files only.</p>}
-      {config?.protected && <form onSubmit={event => {
-        event.preventDefault();
-        const value = keyInput.current?.value.trim() || '';
-        if (!value) return;
-        setFiles([]); setStats(null); setShare(null); setCursor(null); setError('');
-        setLoading(true); setToken(value); setUnlockAttempt(previous => previous + 1);
-      }}>
-        <label htmlFor="management-key">Management key</label>
-        <input id="management-key" type="password" ref={keyInput} required autoComplete="off" />
-        <button type="submit" disabled={busy}>Unlock files</button>
-        <p className="notice">The key stays in memory for this page session.</p>
-      </form>}
-      {stats && <div className="stats" aria-label="Storage usage">
-        <span><strong>{stats.fileCount}</strong> files</span>
-        <span><strong>{formatBytes(stats.totalBytes)}</strong> stored</span>
-      </div>}
-      <section aria-labelledby="upload-heading">
-        <h2 id="upload-heading">Upload a file</h2>
-        <label htmlFor="file">Choose a file (up to 25 MiB)</label>
-        <input id="file" ref={input} type="file" disabled={busy || loading} onChange={event => {
+    <div className="app-shell">
+      <header className="topbar">
+        <a className="brand" href="#files"><span className="brand-icon"><Icon name="cloud" /></span><span>Cloud Storage</span></a>
+        <div className="search-field">
+          <Icon name="search" />
+          <input aria-label="Search loaded files" placeholder="Search files" value={query} onChange={event => setQuery(event.target.value)} />
+          {query && <button className="clear-search" aria-label="Clear search" onClick={() => setQuery('')}>×</button>}
+        </div>
+        <span className="project-label">Cloud Computing 1</span>
+      </header>
+
+      <aside className="sidebar" aria-label="File navigation">
+        <button className="new-button" disabled={busy || loading || locked} onClick={() => input.current?.click()}><Icon name="plus" /> New upload</button>
+        <nav><a className="nav-item active" href="#files" aria-current="page"><Icon name="folder" /> My files</a></nav>
+        <div className="storage-summary" aria-label="Storage usage">
+          <span className="storage-label"><Icon name="cloud" /> Storage</span>
+          <strong>{stats ? formatBytes(stats.totalBytes) : '—'} used</strong>
+          <span>{stats ? `${stats.fileCount} ${stats.fileCount === 1 ? 'file' : 'files'} stored` : 'No usage data yet'}</span>
+        </div>
+      </aside>
+
+      <main id="files" className="workspace">
+        <div className="page-heading">
+          <div><h1>My files</h1><p>Your files, in one place.</p></div>
+          <button className="secondary-button refresh-button" disabled={busy || loading || locked} onClick={() => void run(refresh)}><Icon name="refresh" /> Refresh</button>
+        </div>
+
+        {config && !config.protected && <p className="demo-notice">Shared course demo · Use test files only. Anyone with access can manage them.</p>}
+
+        {config?.protected && <form className="unlock-form" onSubmit={event => {
+          event.preventDefault();
+          const value = keyInput.current?.value.trim() || '';
+          if (!value) return;
+          setFiles([]); setStats(null); setShare(null); setCursor(null); setError('');
+          setLoading(true); setToken(value); setUnlockAttempt(previous => previous + 1);
+        }}>
+          <label htmlFor="management-key">Management key</label>
+          <div className="unlock-controls"><input id="management-key" type="password" ref={keyInput} required autoComplete="off" placeholder="Enter your key" />
+            <button className="primary-button" type="submit" disabled={busy}>Unlock files</button></div>
+          <small>The key stays in memory for this page session.</small>
+        </form>}
+
+        <input className="visually-hidden" aria-label="Choose a file to upload" ref={input} type="file" tabIndex={-1} disabled={busy || loading || locked} onChange={event => {
           setFile(event.target.files?.[0] ?? null); setMessage(''); setError('');
         }} />
-        <button disabled={!file || busy || loading} onClick={() => void uploadFile()}>{busy ? 'Working…' : 'Upload'}</button>
-      </section>
-      <p role="status" className="message">{message}</p>
-      {error && <p role="alert" className="error">{error}</p>}
-      {share && <div className="share-result" role="status">
-        <label htmlFor="share-url">Temporary download link</label>
-        <input id="share-url" readOnly value={share.url} onFocus={event => event.target.select()} />
-        <p>Expires {new Date(share.expiresAt).toLocaleString()}. Anyone with this link can download this file until then.</p>
-      </div>}
-      <section aria-labelledby="files-heading">
-        <div className="section-heading"><h2 id="files-heading">Stored files</h2>
-          <button disabled={busy || loading} onClick={() => void run(refresh)}>Refresh</button>
-        </div>
-        {config?.sharingEnabled && <label>Sharing link lifetime <select value={expiresIn} onChange={event => setExpiresIn(Number(event.target.value))}>
-          <option value={900}>15 minutes</option><option value={3600}>1 hour</option><option value={86400}>24 hours</option>
-        </select></label>}
-        {config?.protected && !token ? <p>Enter the management key to access your files.</p> : loading ? <p>Loading files…</p> : files.length === 0 ? <p>No files yet. Upload your first file above.</p> :
-          <div className="table-wrap"><table>
-            <thead><tr><th>Name / type</th><th>Size</th><th>Uploaded</th><th>Actions</th></tr></thead>
-            <tbody>{files.map(item => <tr key={item.key}>
-              <td><strong>{item.name}</strong><small>{item.type}</small></td>
-              <td>{formatBytes(item.size)}</td>
-              <td><time dateTime={item.uploadedAt}>{new Date(item.uploadedAt).toLocaleString()}</time></td>
-              <td className="actions"><button disabled={busy} onClick={() => void run(async () => {
-                const response = await request(`/api/file?key=${encodeURIComponent(item.key)}`);
-                if (!response.ok) await readResponse(response);
-                const url = URL.createObjectURL(await response.blob());
-                const anchor = document.createElement('a');
-                anchor.href = url; anchor.download = item.name; document.body.append(anchor); anchor.click(); anchor.remove();
-                window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-              })}>Download</button>
-                {config?.sharingEnabled && <button disabled={busy} onClick={() => void run(async () => {
-                  const link = await request('/api/share', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ key: item.key, expiresIn }),
-                  }).then(readResponse<{ url: string; expiresAt: string }>);
-                  setShare(link);
-                })}>Share</button>}
-                <button disabled={busy} onClick={() => void deleteFile(item)}>Delete</button></td>
-            </tr>)}</tbody>
-          </table></div>}
-        {cursor && <button disabled={busy} onClick={() => void run(async () => {
-          const page = await request(`/api/files?cursor=${encodeURIComponent(cursor)}`).then(readResponse<FilePage>);
-          setFiles(previous => [...new Map([...previous, ...page.files].map(item => [item.key, item])).values()]);
-          setCursor(page.cursor);
-        })}>Load more</button>}
-      </section>
-    </main>
+        {file && <section className="upload-strip" aria-label="Selected upload">
+          <span className="file-symbol"><Icon name="file" /></span>
+          <div className="upload-name"><strong>{file.name}</strong><small>{formatBytes(file.size)} · Maximum 25 MiB</small></div>
+          <button className="primary-button" disabled={busy || loading || locked} onClick={() => void uploadFile()}>{busy ? 'Working…' : 'Upload'}</button>
+          <button className="secondary-button" disabled={busy} onClick={() => { setFile(null); if (input.current) input.current.value = ''; }}>Cancel</button>
+        </section>}
+
+        <div role="status" aria-live="polite">{message && <p className="feedback success">{message}</p>}{busy && <p className="working">Working…</p>}</div>
+        {error && <p role="alert" className="feedback error">{error}</p>}
+        {share && <div className="share-result" role="status">
+          <label htmlFor="share-url">Temporary download link</label>
+          <input id="share-url" readOnly value={share.url} onFocus={event => event.target.select()} />
+          <small>Expires {new Date(share.expiresAt).toLocaleString()}. Anyone with this link can download the file.</small>
+          <button className="text-button" onClick={() => setShare(null)}>Dismiss</button>
+        </div>}
+
+        <section className="file-section" aria-label="Stored files">
+          <div className="list-toolbar">
+            <span>{query ? `${visibleFiles.length} ${visibleFiles.length === 1 ? 'match' : 'matches'}` : `${files.length} ${files.length === 1 ? 'file' : 'files'}`}{cursor ? ' loaded' : ''}</span>
+            {config?.sharingEnabled && <label className="sharing-lifetime">Link expiry <select value={expiresIn} onChange={event => setExpiresIn(Number(event.target.value))}>
+              <option value={900}>15 minutes</option><option value={3600}>1 hour</option><option value={86400}>24 hours</option>
+            </select></label>}
+          </div>
+          {locked ? <div className="empty-state"><Icon name="folder" /><h2>Your files are protected</h2><p>Enter the management key above to continue.</p></div> : loading ?
+            <div className="empty-state"><p>Loading your files…</p></div> : error && files.length === 0 ?
+            <div className="empty-state"><h2>Files couldn’t be loaded</h2><p>Check the message above and try again.</p></div> : visibleFiles.length === 0 ?
+            <div className="empty-state"><Icon name={query ? 'search' : 'folder'} /><h2>{query ? 'No matching files' : 'A home for your files'}</h2>
+              <p>{query ? 'Try another name, or clear your search.' : 'Choose New upload to add your first file.'}</p>
+              {query && <button className="text-button" onClick={() => setQuery('')}>Clear search</button>}
+            </div> :
+            <div className="table-wrap"><table>
+              <thead><tr><th scope="col">Name</th><th scope="col">Uploaded</th><th scope="col">File size</th><th scope="col" className="actions-heading">Actions</th></tr></thead>
+              <tbody>{visibleFiles.map(item => <tr key={item.key}>
+                <td><div className="file-name-cell"><span className={`file-symbol ${item.type.startsWith('image/') ? 'image-file' : item.type === 'application/pdf' ? 'pdf-file' : ''}`}><Icon name="file" /></span>
+                  <div className="file-name"><strong>{item.name}</strong><small>{item.type}</small></div></div></td>
+                <td className="date-cell"><time dateTime={item.uploadedAt} title={new Date(item.uploadedAt).toLocaleString()}>{new Date(item.uploadedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</time></td>
+                <td className="size-cell">{formatBytes(item.size)}</td>
+                <td><div className="file-actions"><button className="icon-button" title="Download" aria-label={`Download ${item.name}`} disabled={busy} onClick={() => void run(async () => {
+                  const response = await request(`/api/file?key=${encodeURIComponent(item.key)}`);
+                  if (!response.ok) await readResponse(response);
+                  const url = URL.createObjectURL(await response.blob());
+                  const anchor = document.createElement('a');
+                  anchor.href = url; anchor.download = item.name; document.body.append(anchor); anchor.click(); anchor.remove();
+                  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+                })}><Icon name="download" /></button>
+                  {config?.sharingEnabled && <button className="icon-button" title="Share" aria-label={`Share ${item.name}`} disabled={busy} onClick={() => void run(async () => {
+                    const link = await request('/api/share', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ key: item.key, expiresIn }),
+                    }).then(readResponse<{ url: string; expiresAt: string }>);
+                    setShare(link);
+                  })}><Icon name="link" /></button>}
+                  <button className="icon-button delete-button" title="Delete permanently" aria-label={`Delete ${item.name} permanently`} disabled={busy} onClick={() => void deleteFile(item)}><Icon name="trash" /></button>
+                </div></td>
+              </tr>)}</tbody>
+            </table></div>}
+          {cursor && <div className="load-more"><p>{query ? 'Search covers loaded files. Load more to include the next page.' : 'More files are available.'}</p><button className="secondary-button" disabled={busy} onClick={() => void run(async () => {
+            const page = await request(`/api/files?cursor=${encodeURIComponent(cursor)}`).then(readResponse<FilePage>);
+            setFiles(previous => [...new Map([...previous, ...page.files].map(item => [item.key, item])).values()]);
+            setCursor(page.cursor);
+          })}>Load more files</button></div>}
+        </section>
+      </main>
+    </div>
   );
 }
 
