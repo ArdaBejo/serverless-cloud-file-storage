@@ -13,6 +13,7 @@
   },
   "observability": {
     "enabled": true,
+    "redact_query_string": true,
   },
   "upload_source_maps": true,
   "r2_buckets": [
