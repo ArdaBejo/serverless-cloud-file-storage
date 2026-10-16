@@ -1,4 +1,4 @@
-type SharePayload = { key: string; version: string; expires: number };
+type SharePayload = { key: string; version: string; expires: number; generation?: string };
 
 function encode(bytes: Uint8Array) {
   return btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
@@ -22,7 +22,7 @@ export async function verifyShare(token: string, secret: string): Promise<ShareP
     const [body, signature] = parts;
     if (!(await crypto.subtle.verify('HMAC', await signingKey(secret), decode(signature), new TextEncoder().encode(body)))) return null;
     const payload = JSON.parse(new TextDecoder().decode(decode(body)));
-    if (typeof payload.key !== 'string' || typeof payload.version !== 'string' ||
+    if (typeof payload.key !== 'string' || typeof payload.version !== 'string' || (payload.generation !== undefined && typeof payload.generation !== 'string') ||
         !Number.isSafeInteger(payload.expires) || payload.expires <= Math.floor(Date.now() / 1000)) return null;
     return payload;
   } catch { return null; }
