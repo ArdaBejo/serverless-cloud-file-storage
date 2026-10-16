@@ -18,6 +18,9 @@ const upload = async (name, content) => {
 test('R2 file lifecycle, duplicate names, legacy keys, pagination and validation', async () => {
   try {
     assert.equal((await request('/api/health')).status, 200);
+    assert.deepEqual(await (await request('/api/config')).json(), { protected: false, sharingEnabled: false });
+    assert.equal((await request('/api/share', {method:'POST',body:'{}'})).status, 503);
+    assert.equal((await request('/api/shared?token=anything')).status, 503);
     assert.equal((await request('/api/r2-test')).status, 404);
     assert.equal((await request('/api/missing')).status, 404);
     assert.equal((await request('/api/file')).status, 400);
@@ -68,3 +71,55 @@ test('R2 file lifecycle, duplicate names, legacy keys, pagination and validation
 
 
 
+
+test('Signed sharing requires management auth and enforces expiry, signature and object version', async () => {
+  const admin = 'test-admin-key-that-is-at-least-32-characters';
+  const secret = 'test-signing-secret-that-is-at-least-32-characters';
+  const secured = new Miniflare(convertV4MiniflareOptions({
+    modules: true, scriptPath: 'dist/serverless_cloud_file_storage/index.js',
+    compatibilityDate: '2026-10-06', r2Buckets: ['MY_BUCKET'],
+    bindings: { ADMIN_TOKEN: admin, SHARE_SECRET: secret },
+  }));
+  const call = (path, init = {}) => secured.dispatchFetch(`https://storage.test${path}`, init);
+  const auth = { Authorization: `Bearer ${admin}`, 'Content-Type': 'application/json' };
+  const share = (key, expiresIn = 900) => call('/api/share', { method: 'POST', headers: auth, body: JSON.stringify({key, expiresIn}) });
+  try {
+    assert.equal((await call('/api/health')).status, 200);
+    assert.deepEqual(await (await call('/api/config')).json(), { protected: true, sharingEnabled: true });
+    for (const path of ['/api/files', '/api/stats', '/api/file?key=test']) assert.equal((await call(path)).status, 401);
+    assert.equal((await call('/api/upload', {method:'POST'})).status, 401);
+    assert.equal((await call('/api/file?key=test', {method:'DELETE'})).status, 401);
+    assert.equal((await call('/api/share', {method:'POST'})).status, 401);
+    assert.equal((await call('/api/files', {headers:{Authorization:'Bearer wrong'}})).status, 401);
+    const bucket = await secured.getR2Bucket('MY_BUCKET');
+    await bucket.put('test', 'shared content', {customMetadata:{originalName:'shared.txt'}});
+    assert.equal((await call('/api/files', {headers:auth})).status, 200);
+    assert.equal((await share('test', 59)).status, 400);
+    assert.equal((await share('test', 86401)).status, 400);
+    assert.equal((await share('missing')).status, 404);
+    assert.equal((await call('/api/share', {method:'POST',headers:auth,body:'null'})).status, 400);
+    const linkResponse = await share('test');
+    assert.equal(linkResponse.status, 200);
+    const link = new URL((await linkResponse.json()).url);
+    assert.equal(await (await call(link.pathname + link.search)).text(), 'shared content');
+    const token = link.searchParams.get('token');
+    const [payload, signature] = token.split('.');
+    assert.equal((await call(`/api/shared?token=${payload}.invalid`)).status, 403);
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString());
+    decoded.key = 'other-object';
+    const tampered = Buffer.from(JSON.stringify(decoded)).toString('base64url');
+    assert.equal((await call(`/api/shared?token=${tampered}.${signature}`)).status, 403);
+    decoded.key = 'test'; decoded.expires = Math.floor(Date.now() / 1000) - 1;
+    const expired = Buffer.from(JSON.stringify(decoded)).toString('base64url');
+    const {createHmac} = await import('node:crypto');
+    const expiredSignature = createHmac('sha256', secret).update(expired).digest('base64url');
+    assert.equal((await call(`/api/shared?token=${expired}.${expiredSignature}`)).status, 403);
+    await bucket.put('test', 'replacement');
+    assert.equal((await call(link.pathname + link.search)).status, 404);
+    const replacement = new URL((await (await share('test')).json()).url);
+    await bucket.delete('test');
+    assert.equal((await call(replacement.pathname + replacement.search)).status, 404);
+    assert.equal((await call('/api/shared?token=malformed')).status, 403);
+    console.log('Verified protected management, signed links, tampering, expiry, replacement and deletion.');
+  } finally { await secured.dispose(); }
+});

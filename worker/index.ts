@@ -1,4 +1,21 @@
+import { createShare, matchesToken, verifyShare } from './sharing.js';
+
+type StorageEnv = Env & { ADMIN_TOKEN?: string; SHARE_SECRET?: string };
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
+
+function download(object: R2ObjectBody) {
+  const name = object.customMetadata?.originalName || object.key;
+  const encodedName = encodeURIComponent(name).replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16)}`);
+  return new Response(object.body, { headers: {
+    'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
+    'Content-Length': String(object.size),
+    'Content-Disposition': `attachment; filename="download"; filename*=UTF-8''${encodedName}`,
+    'ETag': object.httpEtag,
+    'Cache-Control': 'private, no-store',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+  } });
+}
 
 function metadata(object: R2Object) {
   return {
@@ -21,6 +38,38 @@ export default {
     try {
       if (url.pathname === '/api/health' && request.method === 'GET') {
         return Response.json({ status: 'ok', message: 'Cloud File Storage API is running' });
+      }
+      const sharingEnabled = !!env.ADMIN_TOKEN && !!env.SHARE_SECRET && env.ADMIN_TOKEN.length >= 32 && env.SHARE_SECRET.length >= 32;
+      if (url.pathname === '/api/config' && request.method === 'GET') {
+        return Response.json({ protected: !!env.ADMIN_TOKEN, sharingEnabled }, { headers: { 'Cache-Control': 'no-store' } });
+      }
+      if (url.pathname === '/api/shared' && request.method === 'GET') {
+        if (!sharingEnabled) return error('Sharing is not configured', 503);
+        const payload = await verifyShare(url.searchParams.get('token') || '', env.SHARE_SECRET!);
+        if (!payload) return error('Invalid or expired sharing link', 403);
+        const object = await env.MY_BUCKET.get(payload.key);
+        if (!object || object.version !== payload.version) return error('Shared file no longer exists', 404);
+        return download(object);
+      }
+      if (url.pathname.startsWith('/api/') && env.ADMIN_TOKEN) {
+        const provided = request.headers.get('Authorization') || '';
+        if (!(await matchesToken(provided, `Bearer ${env.ADMIN_TOKEN}`))) return error('Management key required', 401);
+      }
+      if (url.pathname === '/api/share' && request.method === 'POST') {
+        if (!sharingEnabled) return error('Configure ADMIN_TOKEN and SHARE_SECRET (at least 32 characters each) to enable sharing', 503);
+        let body: { key?: unknown; expiresIn?: unknown };
+        try { body = await request.json(); } catch { return error('Expected JSON body', 400); }
+        const ttl = body?.expiresIn ?? 900;
+        if (typeof body?.key !== 'string' || !body.key || typeof ttl !== 'number' || !Number.isInteger(ttl) || ttl < 60 || ttl > 86400) {
+          return error('Provide a file key and expiry from 60 to 86400 seconds', 400);
+        }
+        const object = await env.MY_BUCKET.head(body.key);
+        if (!object) return error('File not found', 404);
+        const expires = Math.floor(Date.now() / 1000) + ttl;
+        const token = await createShare({ key: object.key, version: object.version, expires }, env.SHARE_SECRET!);
+        const link = new URL('/api/shared', url.origin);
+        link.searchParams.set('token', token);
+        return Response.json({ url: link.href, expiresAt: new Date(expires * 1000).toISOString() }, { headers: { 'Cache-Control': 'no-store' } });
       }
       if (url.pathname === '/api/upload' && request.method === 'POST') {
         let formData: FormData;
@@ -72,17 +121,7 @@ export default {
         if (request.method === 'GET') {
           const object = await env.MY_BUCKET.get(key);
           if (!object) return error('File not found', 404);
-          const name = object.customMetadata?.originalName || object.key;
-          const encodedName = encodeURIComponent(name).replace(/['()*]/g, c => `%${c.charCodeAt(0).toString(16)}`);
-          const headers = new Headers({
-            'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
-            'Content-Length': String(object.size),
-            'Content-Disposition': `attachment; filename="download"; filename*=UTF-8''${encodedName}`,
-            'ETag': object.httpEtag,
-            'Cache-Control': 'private, no-store',
-            'X-Content-Type-Options': 'nosniff',
-          });
-          return new Response(object.body, { headers });
+          return download(object);
         }
         if (request.method === 'DELETE') {
           if (!(await env.MY_BUCKET.head(key))) return error('File not found', 404);
@@ -98,4 +137,4 @@ export default {
       return error('Storage request failed. Please try again.', 500);
     }
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<StorageEnv>;

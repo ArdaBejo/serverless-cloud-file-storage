@@ -18,5 +18,8 @@ table { width: 100%; border-collapse: collapse; font-size: 15px; }
 th, td { padding: 14px 10px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
 td:first-child { max-width: 300px; overflow-wrap: anywhere; }
 small { display: block; margin-top: 4px; }
-.actions { display: flex; align-items: center; gap: 12px; }
+.actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.share-result { padding: 20px; border: 1px solid var(--border); border-radius: 8px; }
+.share-result input { width: 100%; box-sizing: border-box; padding: 10px; }
+select { margin: 12px; padding: 8px; font: inherit; }
 @media (max-width: 600px) { main { margin: 12px auto; padding: 16px; } section { padding: 16px; } }
