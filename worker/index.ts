@@ -1,4 +1,5 @@
 import { createShare, matchesToken, verifyShare } from './sharing.js';
+import { createSession, readSession, sessionCookie } from './session.js';
 import { STATE_PREFIX, changeState, getState, isTrashed, listStates, stateKey, trashMetadata } from './trash.js';
 
 type StorageEnv = Env & { ADMIN_TOKEN?: string; SHARE_SECRET?: string };
@@ -54,9 +55,35 @@ export default {
         if (!object || object.version !== payload.version || isTrashed(state, object) || (payload.generation || '') !== (state?.version || '')) return error('Shared file no longer exists or the link was revoked', 404);
         return download(object);
       }
+      if (url.pathname === '/api/session') {
+        const origin = url.origin;
+        const headers = new Headers({ 'Cache-Control': 'no-store' });
+        if (request.method === 'GET') {
+          const session = env.ADMIN_TOKEN ? await readSession(request, env.ADMIN_TOKEN) : null;
+          return Response.json({ authenticated: !env.ADMIN_TOKEN || !!session, expiresAt: session ? new Date(session.expires * 1000).toISOString() : null }, { headers });
+        }
+        if (request.method === 'DELETE') {
+          if (request.headers.get('Origin') !== origin) return error('Same-origin request required', 403);
+          headers.set('Set-Cookie', sessionCookie('', true));
+          return new Response(null, { status: 204, headers });
+        }
+        if (request.method === 'POST') {
+          if (request.headers.has('Origin') && request.headers.get('Origin') !== origin) return error('Same-origin request required', 403);
+          if (!env.ADMIN_TOKEN) return Response.json({ authenticated: true, expiresAt: null }, { headers });
+          if (!(await matchesToken(request.headers.get('Authorization') || '', 'Bearer ' + env.ADMIN_TOKEN))) return error('Incorrect management key', 401);
+          const session = await createSession(env.ADMIN_TOKEN, origin);
+          headers.set('Set-Cookie', sessionCookie(session.token));
+          return Response.json({ authenticated: true, expiresAt: session.expiresAt }, { headers });
+        }
+        return error('Method not allowed', 405);
+      }
       if (url.pathname.startsWith('/api/') && env.ADMIN_TOKEN) {
         const provided = request.headers.get('Authorization') || '';
-        if (!(await matchesToken(provided, `Bearer ${env.ADMIN_TOKEN}`))) return error('Management key required', 401);
+        const bearer = await matchesToken(provided, 'Bearer ' + env.ADMIN_TOKEN);
+        if (!bearer) {
+          if (!(await readSession(request, env.ADMIN_TOKEN))) return error('Your session expired. Unlock your files again.', 401);
+          if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && request.headers.get('Origin') !== url.origin) return error('Same-origin request required', 403);
+        }
       }
       if (url.pathname === '/api/share' && request.method === 'POST') {
         if (!sharingEnabled) return error('Configure ADMIN_TOKEN and SHARE_SECRET (at least 32 characters each) to enable sharing', 503);

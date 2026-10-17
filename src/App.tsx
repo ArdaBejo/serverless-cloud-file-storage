@@ -10,6 +10,7 @@ type StoredFile = { key: string; name: string; size: number; type: string; uploa
 type FilePage = { files: StoredFile[]; cursor: string | null };
 type Stats = { fileCount: number; totalBytes: number; trashCount: number; trashBytes: number; measuredAt: string };
 type Config = { protected: boolean; sharingEnabled: boolean };
+type SessionStatus = { authenticated: boolean; expiresAt: string | null };
 
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -58,7 +59,7 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const [config, setConfig] = useState<Config | null>(null);
-  const [token, setToken] = useState('');
+  const [sessionExpiresAt, setSessionExpiresAt] = useState<string | null>(null);
   const [unlockAttempt, setUnlockAttempt] = useState(0);
   const [share, setShare] = useState<{ url: string; expiresAt: string } | null>(null);
   const [expiresIn, setExpiresIn] = useState(900);
@@ -80,19 +81,64 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [copied]);
 
-  const request = useCallback((path: string, init: RequestInit = {}) => {
-    const headers = new Headers(init.headers);
-    if (token) headers.set('Authorization', `Bearer ${token}`);
-    return fetch(path, { ...init, headers });
-  }, [token]);
+  const clearSession = useCallback(() => {
+    setUnlocked(false); setSessionExpiresAt(null); setFiles([]); setStats(null); setCursor(null); setShare(null);
+    setPreviewFile(null); setConfirmDelete(null); setUploads([]); setUndoFile(null); setMessage(''); setLoading(false);
+  }, []);
+
+  const request = useCallback(async (path: string, init: RequestInit = {}) => {
+    const response = await fetch(path, { ...init, credentials: 'same-origin' });
+    if (response.status === 401 && path !== '/api/session') {
+      clearSession();
+      setError('Your session expired. Unlock your files again.');
+    }
+    return response;
+  }, [clearSession]);
+
+  useEffect(() => {
+    if (!sessionExpiresAt || !unlocked) return;
+    const timer = window.setTimeout(() => {
+      clearSession(); setError('Your session expired. Unlock your files again.');
+    }, Math.max(0, new Date(sessionExpiresAt).getTime() - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [sessionExpiresAt, unlocked, clearSession]);
 
   useEffect(() => {
     let active = true;
-    fetch('/api/config').then(readResponse<Config>).then(value => {
-      if (active) setConfig(value);
+    Promise.all([
+      fetch('/api/config', { credentials: 'same-origin' }).then(readResponse<Config>),
+      fetch('/api/session', { credentials: 'same-origin' }).then(readResponse<SessionStatus>),
+    ]).then(([configuration, session]) => {
+      if (active) {
+        setConfig(configuration); setUnlocked(session.authenticated); setSessionExpiresAt(session.expiresAt);
+        if (configuration.protected && !session.authenticated) setLoading(false);
+      }
     }).catch(() => { if (active) { setError('Could not load configuration. Reload to retry.'); setLoading(false); } });
     return () => { active = false; };
   }, []);
+
+  async function unlockFiles() {
+    const value = keyInput.current?.value.trim() || '';
+    if (!value) return;
+    setBusy(true); setLoading(true); setError('');
+    try {
+      const session = await request('/api/session', { method: 'POST', headers: { Authorization: 'Bearer ' + value } }).then(readResponse<SessionStatus>);
+      setSessionExpiresAt(session.expiresAt); setUnlocked(session.authenticated); setUnlockAttempt(previous => previous + 1);
+    } catch (cause) {
+      clearSession(); setError(cause instanceof Error ? cause.message : 'Could not unlock files.');
+    } finally {
+      if (keyInput.current) keyInput.current.value = '';
+      setBusy(false);
+    }
+  }
+
+  async function lockFiles() {
+    await run(async () => {
+      const response = await request('/api/session', { method: 'DELETE' });
+      if (!response.ok) await readResponse(response);
+      clearSession();
+    });
+  }
 
   const refresh = useCallback(async () => {
     const [page, usage] = await Promise.all([
@@ -105,7 +151,7 @@ function App() {
   }, [request, view]);
 
   useEffect(() => {
-    if (!config || (config.protected && !token)) return;
+    if (!config || (config.protected && !unlocked)) return;
     let active = true;
     // Avoid committing a stale initial response after unmount (including StrictMode).
     async function load() {
@@ -123,7 +169,7 @@ function App() {
     }
     void load();
     return () => { active = false; };
-  }, [request, config, token, unlockAttempt, view]);
+  }, [request, config, unlocked, unlockAttempt, view]);
 
   async function run(action: () => Promise<void>) {
     setBusy(true); setError(''); setMessage(''); setUndoFile(null);
@@ -148,7 +194,7 @@ function App() {
     for (const item of queued) {
       update(item.id, { state: 'uploading' });
       try {
-        await uploadWithProgress(item.file, token, progress => update(item.id, { progress }));
+        await uploadWithProgress(item.file, progress => update(item.id, { progress }));
         update(item.id, { state: 'done', progress: 100 });
         completed++;
       } catch (cause) { update(item.id, { state: 'error', error: cause instanceof Error ? cause.message : 'Upload failed.' }); }
@@ -227,9 +273,7 @@ function App() {
           <input aria-label="Search loaded files" placeholder="Search files" value={query} onChange={event => setQuery(event.target.value)} />
           {query && <button className="clear-search" aria-label="Clear search" onClick={() => setQuery('')}>×</button>}
         </div>
-        {config?.protected && unlocked && <button className="secondary-button lock-button" disabled={busy} onClick={() => {
-          setToken(''); setUnlocked(false); setFiles([]); setStats(null); setCursor(null); setShare(null); setPreviewFile(null); setUploads([]); setUndoFile(null); setMessage(''); setError(''); setLoading(false);
-        }}>Lock</button>}
+        {config?.protected && unlocked && <button className="secondary-button lock-button" disabled={busy} onClick={() => void lockFiles()}>Lock</button>}
       </header>
 
       <aside className="sidebar" aria-label="File navigation">
@@ -259,15 +303,12 @@ function App() {
 
         {config?.protected && !unlocked && <form className="unlock-form" onSubmit={event => {
           event.preventDefault();
-          const value = keyInput.current?.value.trim() || '';
-          if (!value) return;
-          setFiles([]); setStats(null); setShare(null); setPreviewFile(null); setCursor(null); setError(''); setUnlocked(false);
-          setLoading(true); setToken(value); setUnlockAttempt(previous => previous + 1);
+          void unlockFiles();
         }}>
           <label htmlFor="management-key">Management key</label>
           <div className="unlock-controls"><input id="management-key" type="password" ref={keyInput} required autoComplete="off" placeholder="Enter your key" />
             <button className="primary-button" type="submit" disabled={busy}>Unlock files</button></div>
-          <small>The owner chooses this key and shares it privately. Ask the owner for access. Shared download links don’t need a management key.</small>
+          <small>The owner chooses this key and shares it privately. Ask the owner for access. You stay signed in for 8 hours, including page refreshes. Lock ends this browser’s session.</small>
         </form>}
 
         <input className="visually-hidden" aria-label="Choose files to upload" ref={input} type="file" multiple tabIndex={-1} disabled={busy || loading || locked} onChange={event => addUploads(Array.from(event.target.files || []))} />

@@ -14,12 +14,12 @@ export function queueUploads(files: File[]): UploadItem[] {
   }));
 }
 
-export function uploadWithProgress(file: File, token: string, progress: (percent: number) => void) {
+export function uploadWithProgress(file: File, progress: (percent: number) => void) {
   return new Promise<void>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/upload');
     xhr.responseType = 'json';
-    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.withCredentials = true;
     xhr.upload.onprogress = event => {
       if (event.lengthComputable) progress(Math.min(99, Math.round(event.loaded / event.total * 100)));
     };
