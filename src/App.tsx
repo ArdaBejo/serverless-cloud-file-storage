@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import './App.css';
 import PreviewDialog from './PreviewDialog';
+import ConfirmDeleteDialog from './ConfirmDeleteDialog';
 import cloudLogo from './assets/cloud-logo.png';
 import { queueUploads, uploadWithProgress } from './upload';
 import type { UploadItem } from './upload';
@@ -47,6 +48,7 @@ function App() {
   const [dragActive, setDragActive] = useState(false);
   const dragDepth = useRef(0);
   const [previewFile, setPreviewFile] = useState<StoredFile | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<StoredFile | null>(null);
   const [uploads, setUploads] = useState<UploadItem[]>([]);
   const [files, setFiles] = useState<StoredFile[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -60,8 +62,23 @@ function App() {
   const [unlockAttempt, setUnlockAttempt] = useState(0);
   const [share, setShare] = useState<{ url: string; expiresAt: string } | null>(null);
   const [expiresIn, setExpiresIn] = useState(900);
+  const [copied, setCopied] = useState(false);
+  const [copyNotice, setCopyNotice] = useState('');
+  const shareInput = useRef<HTMLInputElement>(null);
   const keyInput = useRef<HTMLInputElement>(null);
   const input = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => { setMessage(''); setUndoFile(null); }, 5000);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => { setCopied(false); setCopyNotice(''); }, 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
 
   const request = useCallback((path: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
@@ -109,7 +126,7 @@ function App() {
   }, [request, config, token, unlockAttempt, view]);
 
   async function run(action: () => Promise<void>) {
-    setBusy(true); setError(''); setMessage('');
+    setBusy(true); setError(''); setMessage(''); setUndoFile(null);
     try { await action(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Request failed.'); }
     finally { setBusy(false); }
@@ -177,6 +194,27 @@ function App() {
     setView(next); setFiles([]); setCursor(null); setQuery(''); setLoading(true); setError(''); setShare(null);
   }
 
+  async function copyShareLink() {
+    if (!share) return;
+    try {
+      await navigator.clipboard.writeText(share.url);
+      setCopied(true); setCopyNotice('Link copied.');
+    } catch {
+      shareInput.current?.focus(); shareInput.current?.select();
+      setCopyNotice('Link selected. Press Ctrl+C (Cmd+C on Mac) to copy.');
+    }
+  }
+
+  async function deleteForever(item: StoredFile) {
+    await run(async () => {
+      const response = await request(`/api/trash?key=${encodeURIComponent(item.key)}`, { method: 'DELETE' });
+      if (!response.ok) { setConfirmDelete(null); await readResponse(response); }
+      setConfirmDelete(null);
+      setMessage(`Permanently deleted: ${item.name}`);
+      await refresh();
+    });
+  }
+
   const visibleFiles = files.filter(item => item.name.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
   const locked = !!config?.protected && !unlocked;
 
@@ -229,7 +267,7 @@ function App() {
           <label htmlFor="management-key">Management key</label>
           <div className="unlock-controls"><input id="management-key" type="password" ref={keyInput} required autoComplete="off" placeholder="Enter your key" />
             <button className="primary-button" type="submit" disabled={busy}>Unlock files</button></div>
-          <small>The key stays in memory for this page session.</small>
+          <small>The owner chooses this key and shares it privately. Ask the owner for access. Shared download links don’t need a management key.</small>
         </form>}
 
         <input className="visually-hidden" aria-label="Choose files to upload" ref={input} type="file" multiple tabIndex={-1} disabled={busy || loading || locked} onChange={event => addUploads(Array.from(event.target.files || []))} />
@@ -248,7 +286,9 @@ function App() {
         {error && <p role="alert" className="feedback error">{error}</p>}
         {share && <div className="share-result" role="status">
           <label htmlFor="share-url">Temporary download link</label>
-          <input id="share-url" readOnly value={share.url} onFocus={event => event.target.select()} />
+          <div className="share-link-controls"><input id="share-url" ref={shareInput} readOnly value={share.url} onFocus={event => event.target.select()} />
+            <button className="secondary-button" onClick={() => void copyShareLink()}>{copied ? 'Copied' : 'Copy link'}</button></div>
+          <span className="copy-notice" aria-live="polite">{copyNotice}</span>
           <small>Expires {new Date(share.expiresAt).toLocaleString()}. Anyone with this link can download the file.</small>
           <button className="text-button" onClick={() => setShare(null)}>Dismiss</button>
         </div>}
@@ -274,13 +314,14 @@ function App() {
                   <div className="file-name">{view === 'trash' ? <strong>{item.name}</strong> : <button className="file-preview-name" disabled={busy} aria-label={`Preview ${item.name}`} onClick={() => setPreviewFile(item)}>{item.name}</button>}<small>{item.type}</small></div></div></td>
                 <td className="date-cell"><time dateTime={item.trashedAt || item.uploadedAt} title={new Date(item.trashedAt || item.uploadedAt).toLocaleString()}>{new Date(item.trashedAt || item.uploadedAt).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</time></td>
                 <td className="size-cell">{formatBytes(item.size)}</td>
-                <td><div className="file-actions">{view === 'trash' ? <button className="secondary-button" disabled={busy} onClick={() => void restoreFile(item)}>Restore</button> : <><button className="icon-button" title="Preview" aria-label={`Open preview of ${item.name}`} disabled={busy} onClick={() => setPreviewFile(item)}><Icon name="eye" /></button>
+                <td><div className="file-actions">{view === 'trash' ? <><button className="secondary-button" disabled={busy} onClick={() => void restoreFile(item)}>Restore</button>
+                  <button className="icon-button delete-button" title="Delete forever" aria-label={`Permanently delete ${item.name}`} disabled={busy} onClick={() => setConfirmDelete(item)}><Icon name="trash" /></button></> : <><button className="icon-button" title="Preview" aria-label={`Open preview of ${item.name}`} disabled={busy} onClick={() => setPreviewFile(item)}><Icon name="eye" /></button>
                   <button className="icon-button" title="Download" aria-label={`Download ${item.name}`} disabled={busy} onClick={() => void downloadFile(item)}><Icon name="download" /></button>
                   {config?.sharingEnabled && <button className="icon-button" title="Share" aria-label={`Share ${item.name}`} disabled={busy} onClick={() => void run(async () => {
                     const link = await request('/api/share', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                       body: JSON.stringify({ key: item.key, expiresIn }),
                     }).then(readResponse<{ url: string; expiresAt: string }>);
-                    setShare(link);
+                    setShare(link); setCopied(false); setCopyNotice('');
                   })}><Icon name="link" /></button>}
                   <button className="icon-button delete-button" title="Move to Trash" aria-label={`Move ${item.name} to Trash`} disabled={busy} onClick={() => void deleteFile(item)}><Icon name="trash" /></button></>}
                 </div></td>
@@ -294,6 +335,7 @@ function App() {
         </section>
       </main>
       {previewFile && <PreviewDialog key={previewFile.key} file={previewFile} request={request} busy={busy} onClose={() => setPreviewFile(null)} onDownload={() => void downloadFile(previewFile)} />}
+      {confirmDelete && <ConfirmDeleteDialog name={confirmDelete.name} busy={busy} onCancel={() => setConfirmDelete(null)} onConfirm={() => void deleteForever(confirmDelete)} />}
     </div>
   );
 }

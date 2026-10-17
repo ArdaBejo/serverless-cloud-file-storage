@@ -1,7 +1,7 @@
 .app-shell { display: grid; grid-template-columns: 224px minmax(0, 1fr); grid-template-rows: 88px 1fr; min-height: 100svh; padding: 0 24px 24px 0; }
 .topbar { grid-column: 1 / -1; display: flex; align-items: center; gap: 24px; padding: 0 8px 0 26px; }
 .brand { display: flex; align-items: center; gap: 10px; min-width: 174px; font-size: 19px; font-weight: 600; letter-spacing: -.6px; }
-.brand-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: #e2edff; color: #356acc; }
+.brand-icon { display: grid; place-items: center; flex: 0 0 64px; width: 64px; height: 64px; background: transparent; }
 .brand-icon svg { width: 25px; height: 25px; }
 .search-field { max-width: 620px; flex: 1; display: flex; align-items: center; gap: 12px; background: #eaf0f8; border: 1px solid transparent; border-radius: 28px; padding: 0 18px; min-height: 48px; color: #67758a; }
 .search-field:focus-within { background: #fff; border-color: #c7d7f1; }
@@ -109,7 +109,7 @@ tbody tr:hover { background: #f8fafe; }
 .pdf-preview iframe { display: block; width: 100%; height: calc(100svh - 210px); min-height: 220px; border: 0; background: #fff; }
 .pdf-preview p { padding: 12px 20px; font-size: 12px; color: #68778b; }
 @media (max-width: 680px) { .preview-header { padding: 12px; gap: 8px; } .preview-header .secondary-button { padding: 7px 10px; } }
-.brand-icon img { display: block; width: 25px; height: 25px; object-fit: contain; }
+.brand-icon img { display: block; width: 64px; height: 64px; object-fit: contain; image-rendering: pixelated; flex-shrink: 0; }
 .lock-button { margin-left: auto; }
 .sidebar .nav-item { width: 100%; border: 0; background: transparent; text-align: left; }
 .sidebar .nav-item.active { background: #e5edf9; }
@@ -136,6 +136,13 @@ tbody tr:hover { background: #f8fafe; }
   .queue-heading { flex-wrap: wrap; }
   .queue-heading > strong { flex-basis: 100%; }
 }
-.brand-icon { width: 56px; height: 56px; background: transparent; border-radius: 0; }
-.brand-icon img { width: 56px; height: 56px; image-rendering: pixelated; }
-@media (max-width: 1000px) { .brand-icon, .brand-icon img { width: 48px; height: 48px; } }
+.share-link-controls { display: flex; gap: 10px; align-items: center; }
+.copy-notice { display: block; color: #3c7656; font-size: 12px; margin-top: 6px; }
+.confirm-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid #e0e5ed; border-radius: 14px; padding: 24px; color: #243044; background: #fff; box-shadow: 0 16px 60px #192d4933; }
+.confirm-dialog::backdrop { background: #192d4977; }
+.confirm-dialog h2 { font-size: 20px; font-weight: 500; margin-bottom: 12px; }
+.confirm-dialog p { color: #68778b; overflow-wrap: anywhere; }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.danger-button { padding: 9px 16px; border: 1px solid #b64c44; border-radius: 8px; background: #b64c44; color: #fff; }
+.brand { flex-shrink: 0; }
+@media (max-width: 680px) { .share-link-controls { flex-wrap: wrap; } }
