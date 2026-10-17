@@ -95,8 +95,8 @@ test('R2 file lifecycle, duplicate names, legacy keys, pagination and validation
 
 
 test('Signed sharing requires management auth and enforces expiry, signature and object version', async () => {
-  const admin = 'test-admin-key-that-is-at-least-32-characters';
-  const secret = 'test-signing-secret-that-is-at-least-32-characters';
+  const admin = crypto.randomUUID() + crypto.randomUUID();
+  const secret = crypto.randomUUID() + crypto.randomUUID();
   const secured = new Miniflare(convertV4MiniflareOptions({
     modules: true, scriptPath: 'dist/serverless_cloud_file_storage/index.js',
     compatibilityDate: '2026-10-06', r2Buckets: ['MY_BUCKET'],

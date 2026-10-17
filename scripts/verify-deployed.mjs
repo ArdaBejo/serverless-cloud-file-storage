@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
+import { promptSecret } from './secret-input.mjs';
 const base = process.argv[2];
 if (!base) throw new Error('Usage: node scripts/verify-deployed.mjs https://your-worker.workers.dev');
-const headers = process.env.ADMIN_TOKEN ? { Authorization: `Bearer ${process.env.ADMIN_TOKEN}` } : {};
+const configResponse = await fetch(new URL('/api/config', base));
+assert.equal(configResponse.status, 200);
+const accessConfig = await configResponse.json();
+const managementKey = process.env.ADMIN_TOKEN || (accessConfig.protected ? await promptSecret('Management key (hidden): ') : '');
+const headers = managementKey ? { Authorization: `Bearer ${managementKey}` } : {};
 const request = (path, init = {}) => fetch(new URL(path, base), { ...init, headers: { ...headers, ...init.headers } });
 assert.equal((await request('/api/health')).status, 200);
 const content = `Cloud Storage R2 round-trip verification ${crypto.randomUUID()}\n`;
