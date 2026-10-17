@@ -10,6 +10,7 @@
     "preview": "npm run build && vite preview",
     "deploy": "npm run build && wrangler deploy",
     "cf-typegen": "wrangler types",
+    "access:set": "node scripts/set-access-key.mjs",
     "test": "npm run build && node --test tests/*.test.mjs"
   },
   "dependencies": {

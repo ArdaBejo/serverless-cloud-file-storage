@@ -1,83 +1,116 @@
-# Serverless Cloud File Storage
+# Cloud Storage
 
-Cloud Computing 1 term project using React, TypeScript, Cloudflare Workers, R2 and Wrangler.
+A personal serverless file storage app built with React, TypeScript, Cloudflare Workers and R2.
 
-## Development
+## Run and validate
+
+Use Node.js 24 and the committed lockfile.
 
 ```sh
 npm ci
 npm run dev
 npm test
 npm run lint
-npm run deploy
 ```
 
-Development uses local R2, not the deployed bucket. `npm test` builds the app and runs the Worker in Miniflare with temporary, isolated R2 storage. The existing React/Worker project structure is preserved.
+Development uses local R2. Tests build the app and use isolated, temporary Miniflare R2 buckets. The existing React/Worker structure is preserved.
 
 ## Features
 
-- Upload files up to 25 MiB with unique keys to preserve duplicate filenames
-- Paginated listing with original name, MIME type, size and upload time
-- Simple Drive-inspired layout with a sidebar, storage summary and filename search across loaded files
-- Attachment downloads and deletion with confirmation
-- Bucket-wide file count and total stored bytes
-- Optional management key protection and temporary signed download links
-- Backward compatibility with existing filename-based R2 objects
+- Custom pixel-art cloud logo supplied by Arda, also used as the favicon
+- Filename search over loaded files, paginated lists and storage statistics
+- Multi-file selection and drag-and-drop with a sequential upload queue
+- Per-file byte-transfer progress; Uploaded appears only after the server confirms success
+- Independent error results: one failed upload does not stop the remaining files
+- 25 MiB upload limit per file; duplicate filenames remain separate objects
+- Image, PDF and plain-text/code previews, plus attachment downloads
+- Recoverable Trash with Restore and Undo; no browser confirmation popup for normal removal
+- Private management access, a Lock button and expiring signed download links
 
-Statistics scan every bucket page. They measure stored object bytes, not billing or account quotas; concurrent writes can affect the result. Performance testing and further UI polish are future work.
+Trashed files still use storage. Trash offers Restore and Delete forever. Permanent deletion requires an in-app warning dialog, with Cancel focused by default. Normal removal only moves to Trash and never opens a browser alert. There is no automatic expiry policy.
 
 ## API
 
 | Method | Route | Behavior |
 | --- | --- | --- |
-| GET | `/api/health` | Public Worker health |
-| GET | `/api/config` | Public management/sharing availability |
-| POST | `/api/upload` | Multipart `file`; returns metadata |
-| GET | `/api/files?cursor=...` | Up to 100 files and a nullable next cursor |
-| GET | `/api/file?key=...` | Download using the exact URL-encoded key |
-| DELETE | `/api/file?key=...` | Delete one object |
-| GET | `/api/stats` | File count, total bytes, measurement time |
-| POST | `/api/share` | JSON `key` and `expiresIn`; returns signed URL |
-| GET | `/api/shared?token=...` | Download through a valid signed link |
+| GET | `/api/health` | Public health check |
+| GET | `/api/config` | Public access/sharing availability |
+| POST | `/api/upload` | One multipart `file`; batch uploads call this sequentially |
+| GET | `/api/files?view=files&cursor=...` | Up to 100 active files and a nullable cursor |
+| GET | `/api/files?view=trash&cursor=...` | Trashed files, including `trashedAt` |
+| GET | `/api/file?key=...` | Download an active file |
+| DELETE | `/api/file?key=...` | Move to Trash, idempotently |
+| POST | `/api/restore` | JSON `key`; restore original bytes and key |
+| DELETE | `/api/trash?key=...` | Explicit administrative permanent purge, only for a trashed file |
+| GET | `/api/stats` | Active count, total bytes, Trash count and Trash bytes |
+| POST | `/api/share` | JSON `key`, `expiresIn`; return signed download URL |
+| GET | `/api/shared?token=...` | Download using a valid signed link |
 
-The old GET `/api/r2-test` write endpoint is removed. Upload is the explicit write operation.
+All management APIs require `Authorization: Bearer <ADMIN_TOKEN>` when private access is configured. Health, configuration and valid signed downloads remain accessible without the management key.
 
-## Protected management and sharing
+## Private access
 
-Without secrets, this remains a shared course demo: anyone with access can manage its files. Use test data only. Secure sharing stays disabled in this mode.
+Credentials belong only in Cloudflare Secrets and transient process/browser memory. Do not write them into source, README, chat, command arguments or project files. No credential files are needed. The previous file-generating setup helper and example credential file have been removed.
 
-To protect management and enable sharing, set two independent secrets, each at least 32 random characters:
+In your own interactive terminal, from this project folder:
 
 ```sh
-npx wrangler secret put ADMIN_TOKEN
-npx wrangler secret put SHARE_SECRET
-npm run deploy
+npm run access:set
 ```
 
-For local development, copy `.dev.vars.example` to `.dev.vars` and replace the example values. Never commit real keys. The UI accepts the management key and keeps it only in page memory. Reloading requires entering it again. API clients send `Authorization: Bearer <ADMIN_TOKEN>`.
+Choose a key of at least 32 characters (a long passphrase works), then enter it again. Input is hidden. The helper sends it directly to Wrangler through stdin; it does not write a key file, print the key or include it in process arguments. A successful update changes the management key in Cloudflare and preserves the existing sharing secret. Users with the old key need the new key for subsequent requests.
 
-When `ADMIN_TOKEN` is set, upload, listing, statistics, direct download, deletion and share creation require it. Health and configuration remain public. Both secrets must be configured to enable sharing. Existing deployed demo access remains unchanged until secrets are configured.
+For a fresh deployment without a signing secret, initialize it once:
 
-`POST /api/share` accepts `{ "key": "object-key", "expiresIn": 900 }`. Lifetimes range from 60 seconds to 24 hours. The UI offers 15 minutes, 1 hour and 24 hours. The returned URL grants download access only to that object's exact version. HMAC-SHA256 prevents modification. Expiry, deletion or replacement invalidates the link; rotating `SHARE_SECRET` invalidates all links. Anyone holding the link can forward it, and downloaded copies remain available after expiry.
+```sh
+npm run access:set -- --initialize-sharing
+```
 
-This is a single-owner course project. Per-user accounts, rate limiting and resumable large-file uploads are not implemented.
+This generates the signing secret in process memory and sends it to Cloudflare with your chosen management key. Re-running this option revokes all existing signed links. `npm run deploy` preserves configured Cloudflare secrets; do not pass a secrets file.
 
-## Validation
+The owner chooses the management key and gives it privately only to trusted managers. It is not published or discoverable in GitHub. Anyone given this one shared key can manage all files: this is a personal single-owner app, not separate user accounts. Download recipients only need the temporary share URL and do not need a management key. Browser state keeps the key only until Lock or reload.
 
-Integration tests cover upload/download contents, metadata, duplicate filenames, legacy keys, pagination, deletion, upload limits, missing/wrong management keys, malformed or modified signatures, expired links and invalidation after replacement/deletion. TypeScript compilation and lint also pass; the generated Worker declarations have two pre-existing lint warnings.
+Without configured secrets, the app runs in public demo mode and sharing stays disabled. For local development, use temporary environment injection through your own shell or work with test data in local demo mode; do not create credential files. Automated tests generate isolated credentials in memory.
 
-Repeat a live check with:
+Signed links last 60 seconds to 24 hours; the UI offers 15 minutes, 1 hour and 24 hours. HMAC-SHA256 protects their signature. Moving a file to Trash revokes its links. Restoring it does not reactivate old links. Deletion, object replacement, expiry or rotation of the signing secret also invalidates links. URL query strings are redacted from Worker logs/traces. Copy link uses the Clipboard API; denied clipboard access selects the URL for manual copying.
+
+## Storage and previews
+
+File bytes stay at their original R2 keys. Small state records under the reserved `__cloud_storage_state__/` prefix track Trash and restore generations. The prefix is hidden from file APIs and excluded from data-byte totals. Moving to Trash does not copy or delete file contents. This avoids a copy/delete failure window and keeps legacy filename-based objects usable.
+
+State records and usage are scanned with pagination. This suits a small personal bucket; a larger deployment should use an indexed metadata store. Statistics are live scans, not billing estimates, and concurrent writes can change them. Management actions are sequential in the UI; this is not a multi-user transactional system.
+
+Preview supports PNG, JPEG, GIF, WebP, AVIF, BMP, PDFs and text/code. PDFs depend on the browser viewer. Office files/archives remain download-only. Preview reads bytes into browser memory through the authenticated file API; it does not save to disk or send files to an external viewer. Limits are 1 MiB for text and 25 MiB for images/PDFs, including streamed-response checks. HTML/SVG are shown as plain text. Closing the preview aborts pending work and releases object URLs.
+
+The original logo is stored at `src/assets/cloud-logo.png`, with its favicon copy at `public/favicon.png`. CSS uses a fixed 64 px logo with no flex shrinking. This maps the original 640 px export to its 64 px pixel grid and avoids uneven 48/56 px scaling. Transparency and the original PNG remain unchanged. Replace these files with future artwork to update the branding.
+
+## Live verification and continuation
+
+Live app: https://serverless-cloud-file-storage.arda-bejo.workers.dev/
 
 ```sh
 node scripts/verify-deployed.mjs https://serverless-cloud-file-storage.arda-bejo.workers.dev
 ```
 
-For protected deployments, supply `ADMIN_TOKEN` through the process environment. The script uploads a unique file, checks exact downloaded content, listing, metadata and statistics, then deletes only its own object.
+The script creates a unique file, checks contents/listing/metadata/usage, moves it to Trash, restores it, verifies private access and signed-link revocation, then permanently removes only its own test object.
 
-On 16 October 2026, file-management commit `ece843c` was deployed as Worker version `870623e6-d1cc-48f7-afd2-250cecc3e744`. The full live R2 round-trip check passed, including deletion and the subsequent 404 response. An earlier 94-byte upload-only probe named `codex-r2-verification-2026-10-16T13-04-08-465Z.txt` remains in the bucket.
+Tests cover R2 file lifecycle, hidden state pagination, usage including Trash, restore, purge guards, link revocation after Trash/restore, authentication, preview safety/limits and batch selection limits. Interactive browser checks for drag/drop, transfer progress and native PDF display remain manual because browser automation was unavailable.
 
-Temporary sharing and protected management are implemented and tested locally. Sharing remains disabled until live secrets are configured. Browser visual verification was unavailable in this environment.
+Current branch: `feat/private-uploads-trash`, based on the preview milestone `fc34d8c`. Backend Trash milestone: `0070946`. The current UI milestone adds multi-upload, Trash navigation, private-access controls and the supplied logo. Before continuing, inspect Git status/log, this README and the live access configuration. Credentials must not be stored in project files. The owner sets a chosen key through `npm run access:set`.
 
-R2 reference: https://developers.cloudflare.com/r2/api/workers/workers-api-reference/
+Next options: choose a Trash retention policy, measure real upload/download performance and merge the accepted feature branch into main. Per-user accounts and resumable large-file uploads are outside the current scope.
 
+Latest verification, 16 October 2026: UI commit `c41ce29` and Trash commit `0070946` are deployed as Worker version `d5ebb73e-5bc8-41eb-9622-0604e7037b82`. Private management and signed sharing are enabled. All 8 automated tests passed. The live script verified authenticated upload/download/listing/usage, unauthenticated management rejection, signed download, link revocation on Trash, exact-content restore and cleanup of only its own verification file. No user files were removed. The branch is pushed; it has not been merged into main. Continue with manual browser checks and owner review before merging.
 
+## Latest requested polish and next session
+
+- Temporary share links have a Copy link button with a manual-copy fallback.
+- Trash has Delete forever with an in-app warning; Cancel and Escape leave the file untouched.
+- Success notifications, including Restored and Undo, disappear after 5 seconds; errors remain actionable.
+- Logo sizing is fixed to its original pixel grid; visual acceptance is still up to the owner.
+- Management keys are owner-chosen via hidden terminal input and stored only in Cloudflare Secrets. No real secrets have been committed. The two active values were checked against all 13 existing Git revisions and were absent.
+- Legacy local credential copies (.dev.vars, access-key.local and the build copy) were removed after successful live verification. A clean build did not recreate them. Do not restore the old file-generating helper or add key files.
+- After deployment, the owner must run `npm run access:set` to choose their own key. This step requires their private terminal input and must not be done by asking them to paste the key into chat.
+- Branch: `feat/private-uploads-trash`; do not merge into main until owner review. Browser checks for clipboard permissions, the confirmation dialog, notification timing and logo rendering remain manual.
+
+Verification, 17 October 2026: UI polish `86750f5` and file-free key setup `ebf5341` are deployed as Worker version `0c6fd1b2-4e0c-4657-8772-4a499bf24756`. Existing Cloudflare secrets were preserved without a secrets file. Live authenticated lifecycle, signed sharing, link revocation, restore and owned-test cleanup passed. The project contains no remaining copies of either active credential. All 9 automated tests passed after local credential removal; lint has no errors and two existing warnings in generated declarations. The owner still needs to choose their own key by running the interactive `npm run access:set` command. This owner-only step has not been executed with a new key. Current Cloudflare access remains enabled. UI confirmation, clipboard and logo appearance await manual owner review.

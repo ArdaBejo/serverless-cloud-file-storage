@@ -51,9 +51,31 @@ test('R2 file lifecycle, duplicate names, legacy keys, pagination and validation
     assert.equal(stats.totalBytes, 28);
     assert.equal((await request(`/api/file?key=${file.key}`, {method:'DELETE'})).status, 204);
     assert.equal((await request(`/api/file?key=${file.key}`)).status, 404);
-    assert.equal((await request(`/api/file?key=${file.key}`, {method:'DELETE'})).status, 404);
+    assert.equal((await request(`/api/file?key=${file.key}`, {method:'DELETE'})).status, 204);
+    assert.ok(await bucket.head(file.key), 'Moving to Trash preserves original bytes');
+    const trash = await (await request('/api/files?view=trash')).json();
+    assert.equal(trash.files.length, 1);
+    assert.equal(trash.files[0].key, file.key);
+    assert.equal(trash.files[0].name, file.name);
+    assert.ok(trash.files[0].trashedAt);
+    const trashedUsage = await (await request('/api/stats')).json();
+    assert.equal(trashedUsage.fileCount, 2);
+    assert.equal(trashedUsage.trashCount, 1);
+    assert.equal(trashedUsage.trashBytes, 11);
+    assert.equal(trashedUsage.totalBytes, 28, 'Trash still uses storage');
+    assert.equal((await request('/api/restore', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({key:file.key})})).status, 200);
+    assert.equal(await (await request(`/api/file?key=${file.key}`)).text(), 'first file\n');
+    assert.equal((await request(`/api/trash?key=${file.key}`, {method:'DELETE'})).status, 409);
+    assert.equal((await (await request('/api/files?view=trash')).json()).files.length, 0);
+    assert.equal((await request(`/api/file?key=${file.key}`, {method:'DELETE'})).status, 204);
+    assert.equal((await request(`/api/trash?key=${file.key}`, {method:'DELETE'})).status, 204);
+    assert.equal(await bucket.head(file.key), null, 'Explicit admin purge removes bytes');
+    assert.equal((await request('/api/restore', {method:'POST',body:'null'})).status, 400);
+    assert.equal((await request('/api/files?view=unknown')).status, 400);
+    assert.equal((await request('/api/file?key=__cloud_storage_state__/anything')).status, 404);
     assert.equal((await request(`/api/file?key=${second.file.key}`)).status, 200);
     for (let i = 0; i < 105; i++) await bucket.put(`page-${String(i).padStart(3, '0')}`, 'x');
+    for (let i = 0; i < 105; i++) await bucket.put(`__cloud_storage_state__/hidden-${i}`, '', {customMetadata:{fileKey:`nonexistent-${i}`,state:'active'}});
     const keys = new Set();
     let cursor;
     do {
@@ -73,8 +95,8 @@ test('R2 file lifecycle, duplicate names, legacy keys, pagination and validation
 
 
 test('Signed sharing requires management auth and enforces expiry, signature and object version', async () => {
-  const admin = 'test-admin-key-that-is-at-least-32-characters';
-  const secret = 'test-signing-secret-that-is-at-least-32-characters';
+  const admin = crypto.randomUUID() + crypto.randomUUID();
+  const secret = crypto.randomUUID() + crypto.randomUUID();
   const secured = new Miniflare(convertV4MiniflareOptions({
     modules: true, scriptPath: 'dist/serverless_cloud_file_storage/index.js',
     compatibilityDate: '2026-10-06', r2Buckets: ['MY_BUCKET'],
@@ -90,6 +112,8 @@ test('Signed sharing requires management auth and enforces expiry, signature and
     assert.equal((await call('/api/upload', {method:'POST'})).status, 401);
     assert.equal((await call('/api/file?key=test', {method:'DELETE'})).status, 401);
     assert.equal((await call('/api/share', {method:'POST'})).status, 401);
+    assert.equal((await call('/api/restore', {method:'POST'})).status, 401);
+    assert.equal((await call('/api/trash?key=test', {method:'DELETE'})).status, 401);
     assert.equal((await call('/api/files', {headers:{Authorization:'Bearer wrong'}})).status, 401);
     const bucket = await secured.getR2Bucket('MY_BUCKET');
     await bucket.put('test', 'shared content', {customMetadata:{originalName:'shared.txt'}});
@@ -102,6 +126,13 @@ test('Signed sharing requires management auth and enforces expiry, signature and
     assert.equal(linkResponse.status, 200);
     const link = new URL((await linkResponse.json()).url);
     assert.equal(await (await call(link.pathname + link.search)).text(), 'shared content');
+    assert.equal((await call('/api/file?key=test', {method:'DELETE',headers:auth})).status, 204);
+    assert.equal((await call(link.pathname + link.search)).status, 404);
+    assert.equal((await share('test')).status, 404);
+    assert.equal((await call('/api/restore', {method:'POST',headers:auth,body:JSON.stringify({key:'test'})})).status, 200);
+    assert.equal((await call(link.pathname + link.search)).status, 404, 'Restoring a file must not revive an old sharing link');
+    const renewedLink = new URL((await (await share('test')).json()).url);
+    assert.equal(await (await call(renewedLink.pathname + renewedLink.search)).text(), 'shared content');
     const token = link.searchParams.get('token');
     const [payload, signature] = token.split('.');
     assert.equal((await call(`/api/shared?token=${payload}.invalid`)).status, 403);

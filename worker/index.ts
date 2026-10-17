@@ -1,4 +1,6 @@
 import { createShare, matchesToken, verifyShare } from './sharing.js';
+import { createSession, readSession, sessionCookie } from './session.js';
+import { STATE_PREFIX, changeState, getState, isTrashed, listStates, stateKey, trashMetadata } from './trash.js';
 
 type StorageEnv = Env & { ADMIN_TOKEN?: string; SHARE_SECRET?: string };
 const MAX_FILE_SIZE = 25 * 1024 * 1024;
@@ -47,13 +49,41 @@ export default {
         if (!sharingEnabled) return error('Sharing is not configured', 503);
         const payload = await verifyShare(url.searchParams.get('token') || '', env.SHARE_SECRET!);
         if (!payload) return error('Invalid or expired sharing link', 403);
+        if (payload.key.startsWith(STATE_PREFIX)) return error('File not found', 404);
+        const state = await getState(env.MY_BUCKET, payload.key);
         const object = await env.MY_BUCKET.get(payload.key);
-        if (!object || object.version !== payload.version) return error('Shared file no longer exists', 404);
+        if (!object || object.version !== payload.version || isTrashed(state, object) || (payload.generation || '') !== (state?.version || '')) return error('Shared file no longer exists or the link was revoked', 404);
         return download(object);
+      }
+      if (url.pathname === '/api/session') {
+        const origin = url.origin;
+        const headers = new Headers({ 'Cache-Control': 'no-store' });
+        if (request.method === 'GET') {
+          const session = env.ADMIN_TOKEN ? await readSession(request, env.ADMIN_TOKEN) : null;
+          return Response.json({ authenticated: !env.ADMIN_TOKEN || !!session, expiresAt: session ? new Date(session.expires * 1000).toISOString() : null }, { headers });
+        }
+        if (request.method === 'DELETE') {
+          if (request.headers.get('Origin') !== origin) return error('Same-origin request required', 403);
+          headers.set('Set-Cookie', sessionCookie('', true));
+          return new Response(null, { status: 204, headers });
+        }
+        if (request.method === 'POST') {
+          if (request.headers.has('Origin') && request.headers.get('Origin') !== origin) return error('Same-origin request required', 403);
+          if (!env.ADMIN_TOKEN) return Response.json({ authenticated: true, expiresAt: null }, { headers });
+          if (!(await matchesToken(request.headers.get('Authorization') || '', 'Bearer ' + env.ADMIN_TOKEN))) return error('Incorrect management key', 401);
+          const session = await createSession(env.ADMIN_TOKEN, origin);
+          headers.set('Set-Cookie', sessionCookie(session.token));
+          return Response.json({ authenticated: true, expiresAt: session.expiresAt }, { headers });
+        }
+        return error('Method not allowed', 405);
       }
       if (url.pathname.startsWith('/api/') && env.ADMIN_TOKEN) {
         const provided = request.headers.get('Authorization') || '';
-        if (!(await matchesToken(provided, `Bearer ${env.ADMIN_TOKEN}`))) return error('Management key required', 401);
+        const bearer = await matchesToken(provided, 'Bearer ' + env.ADMIN_TOKEN);
+        if (!bearer) {
+          if (!(await readSession(request, env.ADMIN_TOKEN))) return error('Your session expired. Unlock your files again.', 401);
+          if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method) && request.headers.get('Origin') !== url.origin) return error('Same-origin request required', 403);
+        }
       }
       if (url.pathname === '/api/share' && request.method === 'POST') {
         if (!sharingEnabled) return error('Configure ADMIN_TOKEN and SHARE_SECRET (at least 32 characters each) to enable sharing', 503);
@@ -63,10 +93,12 @@ export default {
         if (typeof body?.key !== 'string' || !body.key || typeof ttl !== 'number' || !Number.isInteger(ttl) || ttl < 60 || ttl > 86400) {
           return error('Provide a file key and expiry from 60 to 86400 seconds', 400);
         }
+        if (body.key.startsWith(STATE_PREFIX)) return error('File not found', 404);
         const object = await env.MY_BUCKET.head(body.key);
-        if (!object) return error('File not found', 404);
+        const state = await getState(env.MY_BUCKET, body.key);
+        if (!object || isTrashed(state, object)) return error('File not found', 404);
         const expires = Math.floor(Date.now() / 1000) + ttl;
-        const token = await createShare({ key: object.key, version: object.version, expires }, env.SHARE_SECRET!);
+        const token = await createShare({ key: object.key, version: object.version, expires, generation: state?.version || '' }, env.SHARE_SECRET!);
         const link = new URL('/api/shared', url.origin);
         link.searchParams.set('token', token);
         return Response.json({ url: link.href, expiresAt: new Date(expires * 1000).toISOString() }, { headers: { 'Cache-Control': 'no-store' } });
@@ -89,43 +121,80 @@ export default {
         return Response.json({ success: true, file: metadata(object) }, { status: 201 });
       }
       if (url.pathname === '/api/files' && request.method === 'GET') {
-        const page = await env.MY_BUCKET.list({
-          limit: 100,
-          cursor: url.searchParams.get('cursor') || undefined,
-          include: ['httpMetadata', 'customMetadata'],
-        });
-        return Response.json({
-          files: page.objects.map(metadata),
-          cursor: page.truncated ? page.cursor : null,
-        }, { headers: { 'Cache-Control': 'no-store' } });
+        const view = url.searchParams.get('view') || 'files';
+        if (view !== 'files' && view !== 'trash') return error('Unknown file view', 400);
+        const states = view === 'files' ? await listStates(env.MY_BUCKET) : new Map<string, R2Object>();
+        const files: ReturnType<typeof metadata>[] = [];
+        let cursor = url.searchParams.get('cursor') || undefined;
+        do {
+          const page = await env.MY_BUCKET.list({
+            limit: 100 - files.length, cursor,
+            prefix: view === 'trash' ? STATE_PREFIX : undefined,
+            include: ['httpMetadata', 'customMetadata'],
+          });
+          for (const object of page.objects) {
+            if (view === 'trash') {
+              if (object.customMetadata?.state === 'trashed') files.push(trashMetadata(object));
+            } else if (!object.key.startsWith(STATE_PREFIX) && !isTrashed(states.get(object.key), object)) files.push(metadata(object));
+          }
+          cursor = page.truncated ? page.cursor : undefined;
+        } while (cursor && files.length < 100);
+        return Response.json({ files, cursor: cursor || null }, { headers: { 'Cache-Control': 'no-store' } });
       }
       if (url.pathname === '/api/stats' && request.method === 'GET') {
         let cursor: string | undefined;
         let fileCount = 0;
         let totalBytes = 0;
+        let trashCount = 0;
+        let trashBytes = 0;
+        const states = await listStates(env.MY_BUCKET);
         do {
           const page = await env.MY_BUCKET.list({ limit: 1000, cursor });
           for (const object of page.objects) {
-            fileCount++;
+            if (object.key.startsWith(STATE_PREFIX)) continue;
+            if (isTrashed(states.get(object.key), object)) { trashCount++; trashBytes += object.size; }
+            else fileCount++;
             totalBytes += object.size;
           }
           cursor = page.truncated ? page.cursor : undefined;
         } while (cursor);
-        return Response.json({ fileCount, totalBytes, measuredAt: new Date().toISOString() }, {
+        return Response.json({ fileCount, totalBytes, trashCount, trashBytes, measuredAt: new Date().toISOString() }, {
           headers: { 'Cache-Control': 'no-store' },
         });
+      }
+      if (url.pathname === '/api/restore' && request.method === 'POST') {
+        let body: { key?: unknown };
+        try { body = await request.json(); } catch { return error('Expected JSON body', 400); }
+        if (typeof body?.key !== 'string' || !body.key || body.key.startsWith(STATE_PREFIX)) return error('File key is required', 400);
+        const file = await env.MY_BUCKET.head(body.key);
+        if (!file) return error('File not found', 404);
+        if (isTrashed(await getState(env.MY_BUCKET, body.key), file)) await changeState(env.MY_BUCKET, file, 'active');
+        return Response.json({ file: metadata(file) });
+      }
+      // Explicit administrative purge; the normal UI only offers Move to Trash and Restore.
+      if (url.pathname === '/api/trash' && request.method === 'DELETE') {
+        const key = url.searchParams.get('key');
+        if (!key || key.startsWith(STATE_PREFIX)) return error('File key is required', 400);
+        const file = await env.MY_BUCKET.head(key);
+        if (!file) return error('File not found', 404);
+        if (!isTrashed(await getState(env.MY_BUCKET, key), file)) return error('Move the file to Trash before permanent deletion', 409);
+        await env.MY_BUCKET.delete(key);
+        await env.MY_BUCKET.delete(await stateKey(key));
+        return new Response(null, { status: 204 });
       }
       if (url.pathname === '/api/file') {
         const key = url.searchParams.get('key');
         if (!key) return error('File key is required', 400);
+        if (key.startsWith(STATE_PREFIX)) return error('File not found', 404);
         if (request.method === 'GET') {
           const object = await env.MY_BUCKET.get(key);
-          if (!object) return error('File not found', 404);
+          if (!object || isTrashed(await getState(env.MY_BUCKET, key), object)) return error('File not found', 404);
           return download(object);
         }
         if (request.method === 'DELETE') {
-          if (!(await env.MY_BUCKET.head(key))) return error('File not found', 404);
-          await env.MY_BUCKET.delete(key);
+          const file = await env.MY_BUCKET.head(key);
+          if (!file) return error('File not found', 404);
+          if (!isTrashed(await getState(env.MY_BUCKET, key), file)) await changeState(env.MY_BUCKET, file, 'trashed');
           return new Response(null, { status: 204 });
         }
         return error('Method not allowed', 405);
